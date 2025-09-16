@@ -1,165 +1,122 @@
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
-import { getPool, sql } from './db';
+import * as dotenv from 'dotenv'; // Add this import
+import { getPool } from './db';
+
+// Load environment variables from .env file
+dotenv.config(); // Add this line
 
 const app = express();
+const port = 4000;
+
 app.use(cors());
 app.use(bodyParser.json());
 
-const PORT = 4000;
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.send('API is up and running');
+});
 
-// Get all source types
+// Health check with database connection test
+app.get('/health', async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request().query('SELECT 1 as status');
+    res.json({ 
+      status: 'healthy', 
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    res.status(500).json({ 
+      status: 'degraded', 
+      database: 'disconnected',
+      error: errorMessage,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Source Types endpoint with improved error handling
 app.get('/source-types', async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request().query('SELECT * FROM source_types');
+    const result = await pool.request().query('SELECT id, name, description FROM source_types');
     res.json(result.recordset);
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-// Create data source
-app.post('/data-sources', async (req, res) => {
-  const { name, source_type_id, is_active, connection_properties } = req.body;
-  try {
-    const pool = await getPool();
-    const insertResult = await pool.request()
-      .input('name', sql.VarChar, name)
-      .input('source_type_id', sql.Int, source_type_id)
-      .input('is_active', sql.Bit, is_active ?? true)
-      .query(`INSERT INTO data_sources (name, source_type_id, is_active)
-              OUTPUT INSERTED.id
-              VALUES (@name, @source_type_id, @is_active)`);
-
-    const dataSourceId = insertResult.recordset[0].id;
-
-    // Insert connection properties as key-value pairs
-    if (connection_properties && Array.isArray(connection_properties)) {
-      for (const prop of connection_properties) {
-        await pool.request()
-          .input('data_source_id', sql.Int, dataSourceId)
-          .input('property_key', sql.VarChar, prop.key)
-          .input('property_value', sql.VarChar, prop.value)
-          .query(`INSERT INTO connection_properties (data_source_id, property_key, property_value)
-                  VALUES (@data_source_id, @property_key, @property_value)`);
+  } catch (error) {
+    console.error('Failed to fetch source types:', error);
+    
+    // Type-safe error handling
+    if (error instanceof Error) {
+      // Provide a more specific error message
+      if ('code' in error && (error.code === 'EINSTLOOKUP' || error.code === 'ELOGIN')) {
+        res.status(503).json({ 
+          error: 'Database connection unavailable',
+          message: 'Please check database configuration and ensure SQL Server is running'
+        });
+      } else {
+        res.status(500).json({ 
+          error: 'Internal server error',
+          message: 'Failed to retrieve source types'
+        });
       }
+    } else {
+      res.status(500).json({ 
+        error: 'Internal server error',
+        message: 'An unknown error occurred'
+      });
     }
-
-    res.status(201).json({ id: dataSourceId });
-  } catch (err) {
-    res.status(500).json({ error: 'Database insert error' });
   }
 });
 
-// Get all data sources with connection properties
+// Data Sources endpoint with improved error handling
 app.get('/data-sources', async (req, res) => {
   try {
     const pool = await getPool();
-
-    const sourcesResult = await pool.request().query('SELECT * FROM data_sources');
-    const sources = sourcesResult.recordset;
-
-    // Fetch properties for each data source
-    for (const source of sources) {
-      const propsResult = await pool.request()
-        .input('data_source_id', sql.Int, source.id)
-        .query('SELECT property_key, property_value FROM connection_properties WHERE data_source_id = @data_source_id');
-
-      source.connection_properties = propsResult.recordset;
-    }
-    res.json(sources);
-  } catch (err) {
-    res.status(500).json({ error: 'Database read error' });
-  }
-});
-
-// Get single data source by ID with properties
-app.get('/data-sources/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  try {
-    const pool = await getPool();
-
-    const sourceResult = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT * FROM data_sources WHERE id = @id');
-
-    if (sourceResult.recordset.length === 0) {
-      return res.status(404).json({ error: 'Data source not found' });
-    }
-
-    const source = sourceResult.recordset[0];
-
-    const propsResult = await pool.request()
-      .input('data_source_id', sql.Int, id)
-      .query('SELECT property_key, property_value FROM connection_properties WHERE data_source_id = @data_source_id');
-
-    source.connection_properties = propsResult.recordset;
-
-    res.json(source);
-  } catch (err) {
-    res.status(500).json({ error: 'Database read error' });
-  }
-});
-
-// Update data source and its connection properties
-app.put('/data-sources/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  const { name, source_type_id, is_active, connection_properties } = req.body;
-  try {
-    const pool = await getPool();
-
-    await pool.request()
-      .input('id', sql.Int, id)
-      .input('name', sql.VarChar, name)
-      .input('source_type_id', sql.Int, source_type_id)
-      .input('is_active', sql.Bit, is_active)
-      .query(`UPDATE data_sources SET name=@name, source_type_id=@source_type_id, is_active=@is_active, updated_at=SYSDATETIME() WHERE id=@id`);
-
-    // Delete old properties
-    await pool.request()
-      .input('data_source_id', sql.Int, id)
-      .query('DELETE FROM connection_properties WHERE data_source_id=@data_source_id');
-
-    // Insert new properties
-    if (connection_properties && Array.isArray(connection_properties)) {
-      for (const prop of connection_properties) {
-        await pool.request()
-          .input('data_source_id', sql.Int, id)
-          .input('property_key', sql.VarChar, prop.key)
-          .input('property_value', sql.VarChar, prop.value)
-          .query(`INSERT INTO connection_properties (data_source_id, property_key, property_value)
-                  VALUES (@data_source_id, @property_key, @property_value)`);
+    const result = await pool.request().query('SELECT id, name, source_type_id, is_active FROM data_sources');
+    res.json(result.recordset);
+  } catch (error) {
+    console.error('Failed to fetch data sources:', error);
+    
+    // Type-safe error handling
+    if (error instanceof Error) {
+      if ('code' in error && (error.code === 'EINSTLOOKUP' || error.code === 'ELOGIN')) {
+        res.status(503).json({ 
+          error: 'Database connection unavailable',
+          message: 'Please check database configuration and ensure SQL Server is running'
+        });
+      } else {
+        res.status(500).json({ 
+          error: 'Internal server error',
+          message: 'Failed to retrieve data sources'
+        });
       }
+    } else {
+      res.status(500).json({ 
+        error: 'Internal server error',
+        message: 'An unknown error occurred'
+      });
     }
-
-    res.json({ message: 'Updated successfully' });
-  } catch (err) {
-    res.status(500).json({ error: 'Database update error' });
   }
 });
 
-// Delete data source and its connection properties
-app.delete('/data-sources/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  try {
-    const pool = await getPool();
-
-    await pool.request()
-      .input('data_source_id', sql.Int, id)
-      .query('DELETE FROM connection_properties WHERE data_source_id=@data_source_id');
-
-    await pool.request()
-      .input('id', sql.Int, id)
-      .query('DELETE FROM data_sources WHERE id=@id');
-
-    res.json({ message: 'Deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: 'Database delete error' });
-  }
+// Graceful shutdown handling
+process.on('SIGINT', async () => {
+  console.log('Shutting down gracefully...');
+  process.exit(0);
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Error handling for uncaught exceptions
+process.on('uncaughtException', (error: Error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason: unknown, promise: Promise<any>) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+app.listen(port, () => {
+  console.log(`Server started and listening on port ${port}`);
 });

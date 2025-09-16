@@ -1,32 +1,29 @@
-// Inline declaration to suppress mssql types error
-declare module 'mssql';
-
 import sql from 'mssql';
-import dotenv from 'dotenv';
+import * as dotenv from 'dotenv';
 
+// Load environment variables
 dotenv.config();
 
+// Use defaults if environment variables are not set
 const config = {
-  user: process.env.DB_USER!,
-  password: process.env.DB_PASSWORD!,
-  server: process.env.DB_SERVER!,
-  database: process.env.DB_DATABASE!,
-  port: Number(process.env.DB_PORT),
-  options: {
-    encrypt: false,
-    enableArithAbort: true,
-  },
+    server: process.env.DB_SERVER || '.\\SQLEXPRESS',
+    database: process.env.DB_DATABASE || 'data123',
+    user: process.env.DB_USER || 'data',
+    password: process.env.DB_PASSWORD || 'ala1nna',
+    port: parseInt(process.env.DB_PORT || '1433'),
+    options: {
+        encrypt: false,
+        trustServerCertificate: true,
+    }
 };
 
-// Using 'any' type for pool due to missing official types
-let pool: any = null;
-
-export async function getPool(): Promise<any> {
-  if (pool) {
-    return pool;
-  }
-  pool = await sql.connect(config);
-  return pool;
+export async function getPool() {
+    try {
+        const pool = await sql.connect(config);
+        console.log('Database connected successfully');
+        return pool;
+    } catch (error) {
+        console.error('Database connection failed:', error);
+        throw error;
+    }
 }
-
-export { sql };
