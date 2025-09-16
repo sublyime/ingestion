@@ -1,4 +1,7 @@
-import sql, { ConnectionPool } from 'mssql';
+// Inline declaration to suppress mssql types error
+declare module 'mssql';
+
+import sql from 'mssql';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -15,9 +18,10 @@ const config = {
   },
 };
 
-let pool: ConnectionPool | null = null;
+// Using 'any' type for pool due to missing official types
+let pool: any = null;
 
-export async function getPool(): Promise<ConnectionPool> {
+export async function getPool(): Promise<any> {
   if (pool) {
     return pool;
   }
